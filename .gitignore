@@ -1,0 +1,8 @@
+node_modules
+dist
+build
+.DS_Store
+windows/src-tauri/target
+windows/src-tauri/gen
+CLAUDE.md
+HANDOFF.md

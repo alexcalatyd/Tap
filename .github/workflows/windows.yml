@@ -1,0 +1,41 @@
+# Compila Tap para Windows (Tauri) y deja el instalador como artefacto.
+# Se lanza a mano desde la pestaña Actions o al subir cambios a la app.
+name: Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ['ui/**', 'windows/**', '.github/workflows/windows.yml']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows/src-tauri
+
+      - name: Interfaz
+        run: npm ci
+        working-directory: ui
+
+      - name: CLI de Tauri
+        run: npm ci
+        working-directory: windows
+
+      - name: Compilar
+        run: npx tauri build
+        working-directory: windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tap-Windows
+          path: windows/src-tauri/target/release/bundle/nsis/*.exe

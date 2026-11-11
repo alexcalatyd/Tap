@@ -1,0 +1,837 @@
+@import 'tailwindcss';
+
+/* La ventana es cristal nativo de macOS: aquí el fondo es transparente y los
+   controles son capas translúcidas encima. El acento es el del sistema. */
+
+:root {
+  color-scheme: light dark;
+
+  --accent: #0a84ff;
+  --label: rgba(0, 0, 0, 0.86);
+  --label-2: rgba(0, 0, 0, 0.52);
+  --label-3: rgba(0, 0, 0, 0.3);
+  --surface: rgba(255, 255, 255, 0.58);
+  --surface-hover: rgba(255, 255, 255, 0.4);
+  --well: rgba(0, 0, 0, 0.055);
+  --track: rgba(0, 0, 0, 0.1);
+  --knob: #fff;
+  --edge: rgba(0, 0, 0, 0.07);
+  --shine: rgba(255, 255, 255, 0.75);
+  --danger: #e5352b;
+  --window: rgba(246, 246, 248, 0.5);
+
+  --ease-apple: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
+
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--label);
+  -webkit-font-smoothing: antialiased;
+}
+
+@supports (color: AccentColor) {
+  :root {
+    --accent: AccentColor;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --label: rgba(255, 255, 255, 0.93);
+    --label-2: rgba(255, 255, 255, 0.58);
+    --label-3: rgba(255, 255, 255, 0.32);
+    --surface: rgba(255, 255, 255, 0.1);
+    --surface-hover: rgba(255, 255, 255, 0.07);
+    --well: rgba(0, 0, 0, 0.22);
+    --track: rgba(255, 255, 255, 0.14);
+    --knob: rgba(255, 255, 255, 0.2);
+    --edge: rgba(255, 255, 255, 0.09);
+    --shine: rgba(255, 255, 255, 0.16);
+    --danger: #ff6257;
+    --window: rgba(30, 30, 32, 0.5);
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+/* Velo al 50 % sobre el cristal (--window): súbelo para más opaco, bájalo para más transparente. */
+body {
+  background: var(--window);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* Solo en el navegador (npm run dev): un fondo para ver las transparencias. */
+html.in-browser body {
+  background:
+    radial-gradient(60% 50% at 20% 10%, #ffd9c2, transparent), radial-gradient(60% 60% at 90% 90%, #b9d4ff, transparent), #e9e9ee;
+}
+@media (prefers-color-scheme: dark) {
+  html.in-browser body {
+    background:
+      radial-gradient(60% 50% at 20% 10%, #4a2f3a, transparent), radial-gradient(60% 60% at 90% 90%, #1d3557, transparent), #1c1c1e;
+  }
+}
+
+:focus {
+  outline: none;
+}
+button {
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+/* ── Estructura ─────────────────────────────────────────────────────────── */
+
+.app {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.titlebar {
+  flex: none;
+  height: 56px;
+  padding-top: 2px;
+  display: grid;
+  place-items: center;
+  font-family: ui-rounded, -apple-system, 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--label-2);
+}
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 20px;
+  transition:
+    scale 0.35s var(--ease-apple),
+    opacity 0.25s linear,
+    filter 0.35s var(--ease-apple);
+}
+.stage[data-empty='true'] {
+  justify-content: center;
+}
+
+.composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+
+/* ── Campo del enlace ───────────────────────────────────────────────────── */
+
+.link-field {
+  position: relative;
+  height: 48px;
+  border-radius: 24px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow:
+    inset 0 0.5px 0 var(--shine),
+    0 0 0 0.5px var(--edge),
+    0 1px 2px rgba(0, 0, 0, 0.05),
+    0 8px 24px rgba(0, 0, 0, 0.07);
+  transition: box-shadow 0.2s var(--ease-out);
+}
+.link-field:focus-within {
+  box-shadow:
+    inset 0 0.5px 0 var(--shine),
+    0 0 0 0.5px var(--edge),
+    0 0 0 3.5px color-mix(in srgb, var(--accent) 32%, transparent),
+    0 8px 24px rgba(0, 0, 0, 0.07);
+}
+
+.link-field-input {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  padding: 0 52px 0 18px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 15px;
+  color: var(--label);
+  caret-color: var(--accent);
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.link-field-dust {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.link-field-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+.link-field-placeholder {
+  margin: 0;
+  width: calc(100% - 56px);
+  padding-left: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 15px;
+  color: var(--label-3);
+}
+
+.link-field-go {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  transition:
+    background-color 0.2s var(--ease-out),
+    color 0.2s var(--ease-out),
+    scale 0.2s var(--ease-out);
+}
+.link-field-go:disabled {
+  background: color-mix(in srgb, var(--label) 9%, transparent);
+  color: var(--label-2);
+}
+.link-field-go:not(:disabled):active {
+  scale: 0.92;
+}
+.link-field-go svg {
+  width: 17px;
+  height: 17px;
+}
+.link-field-go:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* ── Barra de formato ───────────────────────────────────────────────────── */
+
+.format-bar {
+  display: flex;
+  align-items: stretch;
+  height: 34px;
+  padding: 3px;
+  border-radius: 17px;
+  background: var(--well);
+  box-shadow: inset 0 0 0 0.5px var(--edge);
+}
+
+.format-bar-gap {
+  flex: none;
+  width: 0.5px;
+  margin: 7px 5px;
+  background: var(--label-3);
+  opacity: 0.6;
+}
+
+.format-bar-item {
+  position: relative;
+  flex: 1;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 590;
+  letter-spacing: 0.02em;
+  color: var(--label-2);
+  transition:
+    color 0.2s var(--ease-out),
+    scale 0.2s var(--ease-out);
+}
+.format-bar-item > span {
+  position: relative;
+}
+.format-bar-item[data-hovered] {
+  color: var(--label);
+}
+.format-bar-item[data-selected] {
+  color: var(--label);
+}
+.format-bar-item[data-pressed] {
+  scale: 0.96;
+}
+.format-bar-item[data-focus-visible] {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.format-bar-indicator {
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  background: var(--knob);
+  box-shadow:
+    inset 0 0.5px 0 var(--shine),
+    0 0 0 0.5px var(--edge),
+    0 1px 2px rgba(0, 0, 0, 0.08),
+    0 3px 8px rgba(0, 0, 0, 0.08);
+  transition:
+    translate 0.4s var(--ease-apple),
+    width 0.4s var(--ease-apple);
+}
+
+/* ── Calidad ────────────────────────────────────────────────────────────── */
+
+.quality {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: -4px;
+}
+.quality-toggle {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 10px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  color: var(--label-3);
+  transition:
+    background-color 0.2s var(--ease-out),
+    color 0.2s var(--ease-out),
+    scale 0.2s var(--ease-out);
+}
+.quality-value {
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
+}
+.quality-toggle svg {
+  width: 12px;
+  height: 12px;
+  transition: rotate 0.35s var(--ease-apple);
+}
+.quality-toggle[aria-expanded='true'] svg {
+  rotate: 180deg;
+}
+.quality-toggle:hover,
+.quality-toggle[aria-expanded='true'] {
+  background: var(--well);
+  color: var(--label-2);
+}
+.quality-toggle:hover .quality-value,
+.quality-toggle[aria-expanded='true'] .quality-value {
+  color: var(--label);
+}
+.quality-toggle:active {
+  scale: 0.97;
+}
+.quality-toggle:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.quality-panel {
+  width: 100%;
+  overflow: hidden;
+}
+.quality-inner {
+  padding: 14px 34px 4px;
+}
+.quality-slider {
+  display: block;
+}
+.quality-track {
+  position: relative;
+  height: 22px;
+}
+.quality-track::before {
+  content: '';
+  position: absolute;
+  inset: 9px -6px;
+  border-radius: 2px;
+  background: var(--track);
+}
+.quality-fill {
+  position: absolute;
+  top: 9px;
+  left: -6px;
+  height: 4px;
+  margin-right: -6px;
+  padding-left: 6px;
+  box-sizing: content-box;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s var(--ease-apple);
+}
+.quality-tick {
+  position: absolute;
+  top: 9px;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--label-3);
+}
+.quality-tick[data-on='true'] {
+  background: rgba(255, 255, 255, 0.7);
+}
+.quality-thumb {
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.1),
+    0 1px 2px rgba(0, 0, 0, 0.14),
+    0 4px 10px rgba(0, 0, 0, 0.16);
+  transition:
+    scale 0.2s var(--ease-out),
+    left 0.3s var(--ease-apple);
+}
+.quality-thumb[data-dragging] {
+  scale: 1.12;
+  transition: scale 0.2s var(--ease-out);
+}
+.quality-thumb[data-focus-visible] {
+  box-shadow:
+    0 0 0 3.5px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 1px 2px rgba(0, 0, 0, 0.14);
+}
+.quality-labels {
+  position: relative;
+  height: 18px;
+  margin-top: 6px;
+}
+.quality-labels span {
+  position: absolute;
+  translate: -50% 0;
+  white-space: nowrap;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-3);
+  transition: color 0.2s var(--ease-out);
+}
+.quality-labels span[data-on='true'] {
+  color: var(--label);
+}
+
+/* ── Lista de descargas ─────────────────────────────────────────────────── */
+
+.list {
+  flex: 1;
+  min-height: 0;
+  margin: 14px -12px 0;
+  padding: 0 0 8px;
+  list-style: none;
+  overflow-y: auto;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 calc(100% - 20px), transparent);
+}
+
+/* La lista espera a que el campo termine de subir antes de aparecer. */
+.list {
+  animation: list-in 0.3s var(--ease-out) 0.18s backwards;
+}
+@keyframes list-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+  padding: 0 12px 0 0;
+  border-radius: 16px;
+  transition: background-color 0.2s var(--ease-out);
+}
+.row:hover {
+  background: var(--surface-hover);
+}
+
+.row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 4px 8px 12px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  text-align: left;
+}
+.row-main:not(:disabled):active {
+  opacity: 0.7;
+}
+.row-main:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.row-thumb {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--well);
+  box-shadow: inset 0 0 0 0.5px var(--edge);
+  color: var(--label-3);
+}
+.row-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.row-thumb svg {
+  width: 20px;
+  height: 20px;
+}
+
+.row-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.row-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 590;
+  color: var(--label);
+}
+.row-status {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-2);
+}
+.row[data-phase='error'] .row-status {
+  color: var(--danger);
+}
+
+.row-side {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.row-action {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--label-2);
+  opacity: 0;
+  scale: 0.8;
+  transition:
+    opacity 0.18s var(--ease-out),
+    scale 0.18s var(--ease-out),
+    background-color 0.18s var(--ease-out),
+    color 0.18s var(--ease-out);
+}
+.row-action svg {
+  width: 12px;
+  height: 12px;
+}
+.row:hover .row-action,
+.row-action:focus-visible {
+  opacity: 1;
+  scale: 1;
+}
+.row-action:hover {
+  background: var(--well);
+  color: var(--label);
+}
+.row-action:active {
+  scale: 0.9;
+}
+.row-action:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.row-indicator {
+  width: 22px;
+  height: 22px;
+  margin-left: 4px;
+  display: grid;
+  place-items: center;
+}
+.row-ring {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+.row-ring.is-busy {
+  animation: spin 0.9s linear infinite;
+}
+.row-check,
+.row-warn {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+}
+.row-check {
+  background: var(--accent);
+}
+.row-check svg {
+  width: 12px;
+  height: 12px;
+}
+.row-warn {
+  background: var(--danger);
+  font-family: ui-rounded, -apple-system, 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+@keyframes spin {
+  to {
+    rotate: 1turn;
+  }
+}
+
+/* ── Carpeta de destino ─────────────────────────────────────────────────── */
+
+.footer {
+  flex: none;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  transition:
+    opacity 0.25s linear,
+    filter 0.35s var(--ease-apple);
+}
+.folder {
+  max-width: 70%;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  color: var(--label-3);
+  transition:
+    background-color 0.2s var(--ease-out),
+    color 0.2s var(--ease-out),
+    scale 0.2s var(--ease-out);
+}
+.folder svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.folder span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.folder:hover {
+  background: var(--well);
+  color: var(--label-2);
+}
+.folder:active {
+  scale: 0.97;
+}
+.folder:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* ── Al arrastrar un enlace sobre la ventana ────────────────────────────── */
+
+.drop-veil {
+  position: absolute;
+  inset: 8px;
+  display: grid;
+  place-items: center;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
+  font-family: ui-rounded, -apple-system, 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--label);
+  opacity: 0;
+  scale: 0.97;
+  pointer-events: none;
+  transition:
+    opacity 0.2s var(--ease-out),
+    scale 0.35s var(--ease-apple);
+}
+.app[data-drop-target] .drop-veil {
+  opacity: 1;
+  scale: 1;
+}
+.app[data-drop-target] .stage,
+.app[data-drop-target] .footer,
+.app[data-drop-target] .titlebar {
+  opacity: 0.18;
+  filter: blur(6px);
+}
+.app[data-drop-target] .stage {
+  scale: 0.97;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Windows (Tauri) ────────────────────────────────────────────────────── */
+/* Sin cristal de macOS: la ventana usa Mica (Windows 11). En Windows 10 no hay
+   Mica, así que el velo pasa a ser opaco (clase no-material). */
+
+html.windows.no-material body {
+  background: #f3f3f3;
+}
+@media (prefers-color-scheme: dark) {
+  html.windows.no-material body {
+    background: #202020;
+  }
+}
+
+/* Barras de desplazamiento finas, como las de macOS. */
+html.windows .list::-webkit-scrollbar {
+  width: 8px;
+}
+html.windows .list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: var(--track) padding-box;
+}
+html.windows .list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Botones de la ventana dibujados a mano (la ventana no tiene marco). */
+.titlebar {
+  position: relative;
+}
+.window-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+}
+.window-controls button {
+  width: 46px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--label-2);
+  font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', sans-serif;
+  font-size: 10px;
+  transition: background-color 0.1s linear;
+}
+.window-controls button:hover {
+  background: var(--well);
+  color: var(--label);
+}
+.window-controls button.close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+.window-controls button.close:active {
+  background: #c83c31;
+}
+
+/* ── Idioma: un código pequeño en la esquina del pie ─────────────────────── */
+
+.footer {
+  position: relative;
+}
+.lang {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  translate: 0 -50%;
+  min-width: 28px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--label-3);
+  opacity: 0.55;
+  overflow: hidden;
+  cursor: default;
+  transition:
+    opacity 0.2s linear,
+    background-color 0.2s linear,
+    color 0.2s linear;
+}
+.lang span {
+  grid-area: 1 / 1;
+}
+.lang:hover,
+.lang:focus-visible {
+  opacity: 1;
+  background: var(--well);
+  color: var(--label-2);
+}
+.lang:active {
+  scale: 0.94;
+}
+.lang:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
