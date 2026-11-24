@@ -5,7 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -93,11 +93,18 @@ struct Engine {
     pending: Mutex<Vec<String>>,
     /// Idioma elegido en la interfaz (para el diálogo de carpeta).
     english: AtomicBool,
+    /// Archivos que ha dado la app (descargados, renombrados, recortados): los únicos
+    /// que la interfaz puede abrir (protocolo asset), renombrar o recortar.
+    media: Mutex<HashSet<String>>,
 }
 
 impl Engine {
     fn emit(&self, event: Value) {
         if let Some(window) = self.window.lock().unwrap().as_ref() {
+            if let Some(path) = event["path"].as_str() {
+                self.media.lock().unwrap().insert(path.to_string());
+                let _ = window.asset_protocol_scope().allow_file(path);
+            }
             let _ = window.eval(&format!("window.__native && window.__native({event})"));
         }
     }
@@ -508,6 +515,177 @@ fn make_playable(app: &AppHandle, engine: &Engine, job: &Mutex<Job>, id: &str, f
     }
 }
 
+// MARK: - Nombres de archivo
+
+/// Quita lo que Windows no admite en un nombre de archivo.
+fn clean_name(name: &str) -> String {
+    let replaced: String = name
+        .chars()
+        .map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '-' } else { c })
+        .collect();
+    let mut name: String = replaced.trim_matches(|c: char| c.is_whitespace() || c == '.').chars().take(180).collect();
+    let reserved = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
+    if reserved.contains(&name.to_uppercase().as_str()) {
+        name.push('_');
+    }
+    name
+}
+
+/// «carpeta/nombre.ext» y, si ya existe, «nombre 2.ext», «nombre 3.ext»…
+fn free_path(folder: &Path, name: &str, ext: &str) -> PathBuf {
+    let file = |n: &str| if ext.is_empty() { n.to_string() } else { format!("{n}.{ext}") };
+    let mut candidate = folder.join(file(name));
+    let mut n = 2;
+    while candidate.exists() {
+        candidate = folder.join(file(&format!("{name} {n}")));
+        n += 1;
+    }
+    candidate
+}
+
+/// En Windows un archivo abierto no se puede mover: el editor acaba de soltarlo,
+/// pero WebView2 puede tardar un poco. Se reintenta durante unos segundos.
+fn move_file(from: &Path, to: &Path) -> bool {
+    for _ in 0..15 {
+        if fs::rename(from, to).is_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    false
+}
+
+fn stem_and_ext(path: &Path) -> (String, String) {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+    (stem, ext)
+}
+
+/// Cambia el nombre (sin la extensión) del archivo ya descargado.
+fn rename(engine: &Engine, id: &str, path: &str, name: &str) {
+    let source = PathBuf::from(path);
+    let name = clean_name(name);
+    let failed = || engine.emit(json!({ "id": id, "type": "renameFailed" }));
+    if name.is_empty() || !engine.media.lock().unwrap().contains(path) || !source.is_file() {
+        return failed();
+    }
+    let (stem, ext) = stem_and_ext(&source);
+    let folder = source.parent().map(Path::to_path_buf).unwrap_or_default();
+    if name == stem {
+        return engine.emit(json!({ "id": id, "type": "renamed", "path": path, "name": name }));
+    }
+    // Si solo cambian mayúsculas, el disco lo ve como el mismo archivo: no se busca hueco.
+    let target = if name.to_lowercase() == stem.to_lowercase() {
+        folder.join(if ext.is_empty() { name.clone() } else { format!("{name}.{ext}") })
+    } else {
+        free_path(&folder, &name, &ext)
+    };
+    if !move_file(&source, &target) {
+        return failed();
+    }
+    engine.media.lock().unwrap().remove(path);
+    let target = target.to_string_lossy().into_owned();
+    engine.emit(json!({ "id": id, "type": "renamed", "path": target, "name": name }));
+}
+
+// MARK: - Recortar
+
+/// Deja solo [start, end] del archivo. El vídeo se recodifica a H.264 para que el
+/// corte caiga justo donde se pidió (con copia directa saltaría al fotograma clave
+/// más cercano); el audio se copia tal cual. Sin `copy_name` sustituye el original.
+fn trim(app: AppHandle, id: String, path: String, start: f64, end: f64, copy_name: Option<String>) {
+    let engine = app.state::<Arc<Engine>>().inner().clone();
+    let source = PathBuf::from(&path);
+    if end <= start || !engine.media.lock().unwrap().contains(&path) || !source.is_file() || !tool(&app, "ffmpeg").exists() {
+        return engine.emit(json!({ "id": id, "type": "trimFailed" }));
+    }
+    cancel(&engine, &id);
+    let job = Arc::new(Mutex::new(Job { pid: None, cancelled: false }));
+    engine.jobs.lock().unwrap().insert(id.clone(), job.clone());
+
+    let (stem, ext) = stem_and_ext(&source);
+    let lower = ext.to_lowercase();
+    let video = lower == "mp4" || lower == "mov";
+    let folder = source.parent().map(Path::to_path_buf).unwrap_or_default();
+    let temporary = folder.join(format!("{stem}.recortando.{ext}"));
+    let length = (end - start).max(0.1);
+    let encoders: &[&[&str]] = if video {
+        &[
+            &["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "19"],
+            &["-c:v", "h264_qsv", "-global_quality", "19"],
+            &["-c:v", "h264_amf", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20"],
+            &["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"],
+        ]
+    } else {
+        &[&["-c", "copy"]]
+    };
+
+    let mut ok = false;
+    for encoder in encoders {
+        if job.lock().unwrap().cancelled {
+            break;
+        }
+        let mut cmd = command(tool(&app, "ffmpeg"));
+        let (from, span) = (format!("{start:.3}"), format!("{length:.3}"));
+        cmd.args(["-y", "-v", "error", "-ss", from.as_str(), "-i"]).arg(&source).args(["-t", span.as_str()]);
+        if video {
+            cmd.args(["-map", "0:v:0", "-map", "0:a:0?"]).args(*encoder).args(["-pix_fmt", "yuv420p", "-c:a", "copy"]);
+        } else {
+            cmd.args(["-map", "0:a:0", "-map_metadata", "0"]).args(*encoder);
+        }
+        if lower != "mp3" && lower != "wav" {
+            cmd.args(["-movflags", "+faststart"]);
+        }
+        cmd.args(["-progress", "pipe:1", "-nostats"])
+            .arg(&temporary)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let Ok(mut child) = cmd.spawn() else { break };
+        job.lock().unwrap().pid = Some(child.id());
+        let mut last = -1i64;
+        if let Some(stdout) = child.stdout.take() {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) else { continue };
+                let percent = (us / 1e6 / length * 100.0).clamp(0.0, 100.0);
+                if percent.floor() as i64 != last && !job.lock().unwrap().cancelled {
+                    last = percent.floor() as i64;
+                    engine.emit(json!({ "id": id, "type": "trimProgress", "percent": percent }));
+                }
+            }
+        }
+        let success = child.wait().map(|s| s.success()).unwrap_or(false);
+        job.lock().unwrap().pid = None;
+        if success && temporary.exists() {
+            ok = true;
+            break;
+        }
+        let _ = fs::remove_file(&temporary);
+    }
+
+    if job.lock().unwrap().cancelled {
+        let _ = fs::remove_file(&temporary);
+        return;
+    }
+    engine.jobs.lock().unwrap().remove(&id);
+    let target = match &copy_name {
+        Some(name) => {
+            let name = clean_name(name);
+            free_path(&folder, if name.is_empty() { "clip" } else { &name }, &ext)
+        }
+        // fs::rename sustituye el archivo de destino si ya existe.
+        None => source.clone(),
+    };
+    if !ok || !move_file(&temporary, &target) {
+        let _ = fs::remove_file(&temporary);
+        return engine.emit(json!({ "id": id, "type": "trimFailed" }));
+    }
+    let name = display_name(&app, &folder);
+    engine.emit(json!({ "id": id, "type": "done", "path": target.to_string_lossy(), "folder": name }));
+}
+
 // MARK: - Interfaz → Rust
 
 #[tauri::command]
@@ -521,6 +699,17 @@ fn bridge(message: Value, app: AppHandle, window: WebviewWindow, engine: State<A
             thread::spawn(move || download(app, id, url, format, quality));
         }
         "cancel" => cancel(&engine, &text("id")),
+        "rename" => {
+            let engine = engine.inner().clone();
+            let (id, path, name) = (text("id"), text("path"), text("name"));
+            thread::spawn(move || rename(&engine, &id, &path, &name));
+        }
+        "trim" => {
+            let (id, path) = (text("id"), text("path"));
+            let (start, end) = (message["start"].as_f64().unwrap_or(0.0), message["end"].as_f64().unwrap_or(0.0));
+            let copy_name = message["copyName"].as_str().map(String::from);
+            thread::spawn(move || trim(app, id, path, start, end, copy_name));
+        }
         "reveal" => {
             let path = text("path");
             if Path::new(&path).exists() {
@@ -636,6 +825,7 @@ fn main() {
                 tools: Mutex::new(()),
                 unzoomed: Mutex::new(None),
                 english: AtomicBool::new(false),
+                media: Mutex::new(HashSet::new()),
                 // `Tap.exe https://…` deja el enlace en el campo al abrir.
                 pending: Mutex::new(
                     std::env::args().skip(1).filter(|a| a.starts_with("http://") || a.starts_with("https://")).collect(),

@@ -110,6 +110,17 @@ Click a finished one to show it in Finder; a failed one can be retried, and
 one in progress cancelled. The folder button at the bottom changes where
 files go (Downloads by default) and is remembered.
 
+Finished rows also have two small buttons:
+
+- **Rename** — edit the file's name right there in the row. It works
+  while it's still downloading too: the new name is applied when it ends.
+- **Trim** — opens a mini editor with a preview and a timeline (frames for
+  video, the waveform for audio). Drag the two handles to keep just a
+  stretch, then **Save** to replace the file or **Save copy** to keep the
+  original. Shortcuts: Space plays, `I` and `O` set the start and end, Esc
+  closes. ffmpeg does the cut: audio is copied as is, video is re-encoded
+  so the cut lands on the exact frame.
+
 You can also hand it a link from the terminal, and it starts on launch:
 
 ```sh
@@ -155,7 +166,7 @@ change, attached to the run as the `Tap-Windows` artifact.
 
 ```mermaid
 flowchart TD
-    UI([Interface — React in a WebView]) -->|"download · cancel · reveal"| N[Native shell]
+    UI([Interface — React in a WebView]) -->|"download · cancel · rename · trim"| N[Native shell]
     N -->|"meta · progress · done · error"| UI
 
     N -->|"macOS"| S["Swift — NSWindow + WKWebView\n(Liquid Glass)"]
@@ -196,7 +207,7 @@ Mac, H.264 on Windows (HEVC there is a paid extension).
 <summary><b>How the interface talks to the app</b></summary>
 <br>
 
-The interface sends small messages — `download`, `cancel`, `reveal`,
+The interface sends small messages — `download`, `cancel`, `reveal`, `rename`, `trim`,
 `chooseFolder` — through `window.webkit.messageHandlers` on the Mac and
 Tauri's `invoke` on Windows. The native side answers by calling
 `window.__native(event)` with `meta`, `progress`, `part`, `done` or

@@ -7,13 +7,25 @@ import WebKit
 
 // MARK: - Sirve la interfaz empaquetada en Resources/ui con el esquema app://
 
+/// Archivos que la interfaz puede abrir con app://local/__media__ (los que ha
+/// descargado, renombrado o recortado esta sesión). Solo se toca en el hilo principal.
+enum Media {
+    static var allowed = Set<String>()
+    static let types = ["mp4": "video/mp4", "mov": "video/quicktime", "m4a": "audio/mp4",
+                        "mp3": "audio/mpeg", "wav": "audio/wav"]
+}
+
 final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
     private let root: URL
+    private var active = Set<ObjectIdentifier>()
+    /// Máximo por respuesta cuando el reproductor pide un rango abierto («bytes=N-»).
+    private static let chunk: Int64 = 4 << 20
 
     init(root: URL) { self.root = root.standardizedFileURL }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else { return }
+        if url.path == "/__media__" { serveMedia(task, url: url); return }
         var path = url.path
         if path.isEmpty || path == "/" { path = "/index.html" }
         let file = root.appendingPathComponent(String(path.dropFirst())).standardizedFileURL
@@ -33,7 +45,88 @@ final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
         task.didFinish()
     }
 
-    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
+        active.remove(ObjectIdentifier(task as AnyObject))
+    }
+
+    /// Sirve un archivo descargado al <video> del editor, con peticiones por rangos
+    /// (sin ellas WebKit no puede saltar a otro punto del vídeo).
+    private func serveMedia(_ task: WKURLSchemeTask, url: URL) {
+        let fail = { task.didFailWithError(NSError(domain: NSURLErrorDomain, code: NSURLErrorFileDoesNotExist)) }
+        guard let file = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "p" })?.value,
+              Media.allowed.contains(file),
+              let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? NSNumber)?.int64Value
+        else { fail(); return }
+
+        var start: Int64 = 0, end = size - 1, partial = false
+        if let header = task.request.value(forHTTPHeaderField: "Range"), header.hasPrefix("bytes=") {
+            let spec = header.dropFirst(6).split(separator: ",").first.map(String.init) ?? ""
+            let parts = spec.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+            if parts.count == 2 {
+                partial = true
+                if parts[0].isEmpty, let suffix = Int64(parts[1]) {
+                    start = max(0, size - suffix)
+                } else {
+                    start = Int64(parts[0]) ?? 0
+                    if let last = Int64(parts[1]) { end = min(last, size - 1) } else { end = min(size - 1, start + Self.chunk - 1) }
+                }
+            }
+        }
+        let type = Media.types[(file as NSString).pathExtension.lowercased()] ?? "application/octet-stream"
+        guard size > 0, start <= end else {
+            let response = HTTPURLResponse(url: url, statusCode: 416, httpVersion: "HTTP/1.1",
+                                           headerFields: ["Content-Range": "bytes */\(size)"])!
+            task.didReceive(response)
+            task.didFinish()
+            return
+        }
+
+        let key = ObjectIdentifier(task as AnyObject)
+        active.insert(key)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var data: Data?
+            if let handle = FileHandle(forReadingAtPath: file) {
+                try? handle.seek(toOffset: UInt64(start))
+                data = try? handle.read(upToCount: Int(end - start + 1))
+                try? handle.close()
+            }
+            DispatchQueue.main.async {
+                guard let self, self.active.remove(key) != nil else { return }
+                guard let data else { fail(); return }
+                var headers = ["Content-Type": type, "Content-Length": String(data.count),
+                               "Accept-Ranges": "bytes", "Cache-Control": "no-store"]
+                if partial { headers["Content-Range"] = "bytes \(start)-\(start + Int64(data.count) - 1)/\(size)" }
+                let response = HTTPURLResponse(url: url, statusCode: partial ? 206 : 200,
+                                               httpVersion: "HTTP/1.1", headerFields: headers)!
+                task.didReceive(response)
+                task.didReceive(data)
+                task.didFinish()
+            }
+        }
+    }
+}
+
+// MARK: - Nombres de archivo
+
+/// Quita lo que no vale en un nombre de archivo (en Mac y, por si se comparte, en Windows).
+func cleanFileName(_ name: String) -> String {
+    let banned = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters)
+    let replaced = String(name.unicodeScalars.map { banned.contains($0) ? "-" : Character($0) })
+    return String(replaced.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        .prefix(180))
+}
+
+/// «carpeta/nombre.ext» y, si ya existe, «nombre 2.ext», «nombre 3.ext»…
+func freePath(folder: String, name: String, ext: String) -> String {
+    let suffix = ext.isEmpty ? "" : "." + ext
+    var candidate = folder + "/" + name + suffix
+    var n = 2
+    while FileManager.default.fileExists(atPath: candidate) {
+        candidate = folder + "/" + name + " \(n)" + suffix
+        n += 1
+    }
+    return candidate
 }
 
 // MARK: - Motor: una descarga = un proceso de yt-dlp
@@ -66,7 +159,13 @@ final class Downloader {
         var converter: Process?
     }
 
+    private final class TrimJob {
+        var process: Process?
+        var cancelled = false
+    }
+
     private var jobs: [String: Job] = [:]
+    private var trims: [String: TrimJob] = [:]
     private let emit: ([String: Any]) -> Void
     var folder = NSHomeDirectory() + "/Downloads"
     private static let searchPaths = ["/opt/homebrew/bin", "/usr/local/bin",
@@ -174,13 +273,143 @@ final class Downloader {
     }
 
     func cancel(id: String) {
+        if let trim = trims.removeValue(forKey: id) {
+            trim.cancelled = true
+            if let process = trim.process, process.isRunning { process.terminate() }
+        }
         guard let job = jobs.removeValue(forKey: id) else { return }
         job.cancelled = true
         if job.process.isRunning { job.process.terminate() }
         if let converter = job.converter, converter.isRunning { converter.terminate() }
     }
 
-    func cancelAll() { jobs.keys.forEach(cancel) }
+    func cancelAll() { (Array(jobs.keys) + Array(trims.keys)).forEach(cancel) }
+
+    // MARK: Recortar
+
+    /// Deja solo [start, end] del archivo. El vídeo se recodifica (con el hardware
+    /// de Apple) para que el corte caiga justo donde se pidió y no en el fotograma
+    /// clave más cercano; el audio se copia tal cual, que ya es preciso.
+    /// Sin `copyName` sustituye el original; con él guarda una copia al lado.
+    func trim(id: String, source: String, start: Double, end: Double, copyName: String?) {
+        cancel(id: id)
+        guard let ffmpeg = Self.find("ffmpeg"), FileManager.default.fileExists(atPath: source) else {
+            emit(["id": id, "type": "trimFailed"])
+            return
+        }
+        let job = TrimJob()
+        trims[id] = job
+
+        let path = source as NSString
+        let ext = path.pathExtension.lowercased()
+        let folder = path.deletingLastPathComponent
+        let temporary = path.deletingPathExtension + ".recortando." + path.pathExtension
+        let video = ext == "mp4" || ext == "mov"
+        let length = max(0.1, end - start)
+        let ffprobe = Self.find("ffprobe")
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var encoders: [[String]] = [["-c", "copy"]]
+            if video {
+                // Se mantiene la familia del códec: HEVC sigue en HEVC y lo demás pasa a H.264.
+                var hevc = false
+                if let ffprobe {
+                    let probe = Process(), output = Pipe()
+                    probe.executableURL = URL(fileURLWithPath: ffprobe)
+                    probe.arguments = ["-v", "error", "-select_streams", "v:0", "-show_entries",
+                                       "stream=codec_name", "-of", "csv=p=0", source]
+                    probe.standardOutput = output
+                    probe.standardError = FileHandle.nullDevice
+                    if (try? probe.run()) != nil {
+                        hevc = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                            .contains("hevc")
+                        probe.waitUntilExit()
+                    }
+                }
+                encoders = [hevc ? ["-c:v", "hevc_videotoolbox", "-q:v", "62", "-tag:v", "hvc1"]
+                                 : ["-c:v", "h264_videotoolbox", "-q:v", "65"],
+                            ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]]
+            }
+
+            var ok = false
+            for encoder in encoders {
+                var arguments = ["-y", "-v", "error", "-ss", String(format: "%.3f", start), "-i", source,
+                                 "-t", String(format: "%.3f", length)]
+                if video {
+                    arguments += ["-map", "0:v:0", "-map", "0:a:0?"] + encoder + ["-c:a", "copy"]
+                } else {
+                    arguments += ["-map", "0:a:0", "-map_metadata", "0"] + encoder
+                }
+                if ext != "mp3" && ext != "wav" { arguments += ["-movflags", "+faststart"] }
+                arguments += ["-progress", "pipe:1", "-nostats", temporary]
+
+                let process = Process(), output = Pipe()
+                process.executableURL = URL(fileURLWithPath: ffmpeg)
+                process.arguments = arguments
+                process.standardOutput = output
+                process.standardError = FileHandle.nullDevice
+                var proceed = false
+                DispatchQueue.main.sync {
+                    guard !job.cancelled else { return }
+                    job.process = process
+                    proceed = true
+                }
+                guard proceed, (try? process.run()) != nil else { break }
+
+                var buffer = Data(), last = -1
+                while true {
+                    let chunk = output.fileHandleForReading.availableData
+                    if chunk.isEmpty { break }
+                    buffer.append(chunk)
+                    while let newline = buffer.firstIndex(of: 0x0A) {
+                        let line = String(decoding: buffer[buffer.startIndex..<newline], as: UTF8.self)
+                        buffer.removeSubrange(buffer.startIndex...newline)
+                        guard line.hasPrefix("out_time_us="), let us = Double(line.dropFirst(12)) else { continue }
+                        let percent = min(100, max(0, us / 1_000_000 / length * 100))
+                        if Int(percent) != last {
+                            last = Int(percent)
+                            DispatchQueue.main.async {
+                                guard !job.cancelled else { return }
+                                self?.emit(["id": id, "type": "trimProgress", "percent": percent])
+                            }
+                        }
+                    }
+                }
+                process.waitUntilExit()
+                if process.terminationStatus == 0, FileManager.default.fileExists(atPath: temporary) { ok = true; break }
+                try? FileManager.default.removeItem(atPath: temporary)
+            }
+
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let files = FileManager.default
+                if job.cancelled {
+                    try? files.removeItem(atPath: temporary)
+                    return
+                }
+                self.trims[id] = nil
+                guard ok else {
+                    try? files.removeItem(atPath: temporary)
+                    self.emit(["id": id, "type": "trimFailed"])
+                    return
+                }
+                var target = source
+                if let copyName {
+                    let name = cleanFileName(copyName)
+                    target = freePath(folder: folder, name: name.isEmpty ? "clip" : name, ext: path.pathExtension)
+                } else {
+                    try? files.removeItem(atPath: source)
+                }
+                do {
+                    try files.moveItem(atPath: temporary, toPath: target)
+                    self.emit(["id": id, "type": "done", "path": target, "folder": folderLabel(folder)])
+                } catch {
+                    try? files.removeItem(atPath: temporary)
+                    self.emit(["id": id, "type": "trimFailed"])
+                }
+            }
+        }
+    }
 
     // MARK: Red de seguridad para vídeo
 
@@ -436,6 +665,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         case "reveal":
             guard let path = body["path"] as? String, FileManager.default.fileExists(atPath: path) else { return }
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        case "rename":
+            guard let id = body["id"] as? String, let path = body["path"] as? String,
+                  let name = body["name"] as? String else { return }
+            rename(id: id, path: path, name: name)
+        case "trim":
+            guard let id = body["id"] as? String, let path = body["path"] as? String, Media.allowed.contains(path),
+                  let start = (body["start"] as? NSNumber)?.doubleValue,
+                  let end = (body["end"] as? NSNumber)?.doubleValue, end > start
+            else {
+                if let id = body["id"] as? String { send(["id": id, "type": "trimFailed"]) }
+                return
+            }
+            downloader.trim(id: id, source: path, start: start, end: end, copyName: body["copyName"] as? String)
         case "getFolder":
             sendFolder()
         case "chooseFolder":
@@ -450,6 +692,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if let event = NSApp.currentEvent, event.type == .leftMouseDown { window.performDrag(with: event) }
         default:
             break
+        }
+    }
+
+    // MARK: Cambiar el nombre
+
+    /// Cambia el nombre (sin la extensión) del archivo ya descargado.
+    private func rename(id: String, path: String, name raw: String) {
+        let name = cleanFileName(raw)
+        let files = FileManager.default
+        guard !name.isEmpty, Media.allowed.contains(path), files.fileExists(atPath: path) else {
+            send(["id": id, "type": "renameFailed"])
+            return
+        }
+        let file = path as NSString
+        let folder = file.deletingLastPathComponent
+        let current = (file.lastPathComponent as NSString).deletingPathExtension
+        if name == current {
+            send(["id": id, "type": "renamed", "path": path, "name": name])
+            return
+        }
+        // Si solo cambian mayúsculas, el disco lo ve como el mismo archivo: no se busca hueco.
+        let suffix = file.pathExtension.isEmpty ? "" : "." + file.pathExtension
+        let target = name.lowercased() == current.lowercased()
+            ? folder + "/" + name + suffix
+            : freePath(folder: folder, name: name, ext: file.pathExtension)
+        do {
+            try files.moveItem(atPath: path, toPath: target)
+            Media.allowed.remove(path)
+            send(["id": id, "type": "renamed", "path": target, "name": ((target as NSString).lastPathComponent as NSString).deletingPathExtension])
+        } catch {
+            send(["id": id, "type": "renameFailed"])
         }
     }
 
@@ -485,6 +758,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: Swift → interfaz
 
     private func send(_ event: [String: Any]) {
+        if let path = event["path"] as? String { Media.allowed.insert(path) }
         guard let data = try? JSONSerialization.data(withJSONObject: event),
               let json = String(data: data, encoding: .utf8) else { return }
         webView.evaluateJavaScript("window.__native && window.__native(\(json))", completionHandler: nil)

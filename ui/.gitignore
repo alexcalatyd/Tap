@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Muestras para probar el editor con npm run dev
+public/sample.*

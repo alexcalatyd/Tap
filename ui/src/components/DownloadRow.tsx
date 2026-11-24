@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'motion/react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatedCircularProgressBar } from '@/components/ui/animated-circular-progress-bar'
 import { platform, type Format } from '@/lib/bridge'
 import { folderName, useStrings } from '@/lib/i18n'
@@ -10,15 +10,35 @@ export type Item = {
   url: string
   format: Format
   quality: string
-  phase: 'starting' | 'preparing' | 'downloading' | 'processing' | 'done' | 'error'
+  phase: 'starting' | 'preparing' | 'downloading' | 'processing' | 'trimming' | 'done' | 'error'
   percent: number
   eta: string
   title?: string
+  /** Nombre que eligió el usuario y aún no está aplicado al archivo. */
+  name?: string
+  /** Fila de una copia recortada: id de la fila original. */
+  trimOf?: string
+  /** Aviso pasajero en una fila terminada (no se pudo renombrar o recortar). */
+  notice?: 'rename' | 'trim'
   thumbnail?: string
   path?: string
   folder?: string
   message?: string
 }
+
+// Lo que no admiten los nombres de archivo en Mac o en Windows.
+export const cleanName = (name: string) =>
+  name
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
+    .replace(/^[\s.]+|[\s.]+$/g, '')
+    .slice(0, 180)
+
+const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path
+export const baseName = (path: string) => fileName(path).replace(/\.[^.]+$/, '')
+export const extension = (path: string) => (/\.([^.]+)$/.exec(fileName(path))?.[1] ?? '').toLowerCase()
+
+/** Nombre que se ve en la fila. */
+export const displayName = (item: Item) => item.name ?? (item.path ? baseName(item.path) : item.title) ?? host(item.url)
 
 function host(url: string) {
   try {
@@ -59,7 +79,10 @@ function status(item: Item, t: Strings) {
     }
     case 'processing':
       return t.converting(format)
+    case 'trimming':
+      return t.trimming(Math.round(item.percent))
     case 'done':
+      if (item.notice) return item.notice === 'rename' ? t.renameFailed : t.trimFailed
       return t.savedIn(format, folderName(item.folder, t))
     case 'error':
       return friendlyError(t, item.message)
@@ -71,17 +94,42 @@ export function DownloadRow({
   onReveal,
   onRemove,
   onRetry,
+  onRename,
+  onEdit,
 }: {
   item: Item
   onReveal: () => void
   onRemove: () => void
   onRetry: () => void
+  onRename: (name: string) => void
+  onEdit: () => void
 }) {
   const t = useStrings()
   const [thumbFailed, setThumbFailed] = useState(false)
+  const [renaming, setRenaming] = useState(false)
   const busy = item.phase === 'starting' || item.phase === 'processing'
-  const active = busy || item.phase === 'preparing' || item.phase === 'downloading'
+  const active = busy || item.phase === 'preparing' || item.phase === 'downloading' || item.phase === 'trimming'
   const showThumb = item.thumbnail && !thumbFailed
+  const canEdit = item.phase === 'done' && !!item.path
+  const canRename = item.phase !== 'trimming'
+  const ext = item.path ? extension(item.path) : item.format
+
+  const thumbnail = (
+    <span className="row-thumb">
+      {showThumb ? (
+        <motion.img
+          src={item.thumbnail}
+          alt=""
+          draggable={false}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          onError={() => setThumbFailed(true)}
+        />
+      ) : (
+        <Glyph video={isVideo(item.format)} />
+      )}
+    </span>
+  )
 
   return (
     <motion.li
@@ -93,46 +141,65 @@ export function DownloadRow({
       className="row"
       data-phase={item.phase}
     >
-      <button
-        type="button"
-        className="row-main"
-        disabled={item.phase !== 'done'}
-        onClick={onReveal}
-        title={item.phase === 'done' ? (windows ? t.showInFolder : t.showInFinder) : undefined}
-      >
-        <span className="row-thumb">
-          {showThumb ? (
-            <motion.img
-              src={item.thumbnail}
-              alt=""
-              draggable={false}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              onError={() => setThumbFailed(true)}
-            />
-          ) : (
-            <Glyph video={isVideo(item.format)} />
-          )}
-        </span>
-        <span className="row-text">
-          <span className="row-title">{item.title ?? host(item.url)}</span>
-          <AnimatePresence mode="popLayout" initial={false}>
-            <motion.span
-              key={item.phase}
-              className="row-status"
-              title={item.phase === 'error' ? item.message : undefined}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.18 }}
-            >
-              {status(item, t)}
-            </motion.span>
-          </AnimatePresence>
-        </span>
-      </button>
+      {renaming ? (
+        <div className="row-main is-renaming">
+          {thumbnail}
+          <NameField
+            initial={displayName(item)}
+            ext={ext}
+            label={t.rename}
+            onDone={(name) => {
+              setRenaming(false)
+              if (name !== null) onRename(name)
+            }}
+          />
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="row-main"
+          disabled={item.phase !== 'done'}
+          onClick={onReveal}
+          title={item.phase === 'done' ? (windows ? t.showInFolder : t.showInFinder) : undefined}
+        >
+          {thumbnail}
+          <span className="row-text">
+            <span className="row-title">{displayName(item)}</span>
+            <AnimatePresence mode="popLayout" initial={false}>
+              <motion.span
+                key={item.phase + (item.notice ?? '')}
+                className="row-status"
+                title={item.phase === 'error' ? item.message : undefined}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.18 }}
+              >
+                {status(item, t)}
+              </motion.span>
+            </AnimatePresence>
+          </span>
+        </button>
+      )}
 
       <span className="row-side">
+        {canEdit && (
+          <button type="button" className="row-action" onClick={onEdit} aria-label={t.trim} title={t.trim}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="6" cy="6.5" r="2.6" />
+              <circle cx="6" cy="17.5" r="2.6" />
+              <path d="M8.2 8l11.3 9.5M8.2 16L19.5 6.5" />
+            </svg>
+          </button>
+        )}
+        {canRename && !renaming && (
+          <button type="button" className="row-action" onClick={() => setRenaming(true)} aria-label={t.rename} title={t.rename}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4.5 19.5l1-4.2L15.8 5a2 2 0 0 1 2.9 0l.3.3a2 2 0 0 1 0 2.9L8.7 18.5Z" />
+              <path d="M13.5 7.3l3.2 3.2" />
+            </svg>
+          </button>
+        )}
         {item.phase === 'error' && (
           <button type="button" className="row-action" onClick={onRetry} aria-label={t.retry} title={t.retry}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -191,6 +258,38 @@ export function DownloadRow({
         </span>
       </span>
     </motion.li>
+  )
+}
+
+// Campo para cambiar el nombre: Intro o salir del campo lo aplica, Esc lo deja como estaba.
+function NameField({ initial, ext, label, onDone }: { initial: string; ext: string; label: string; onDone: (name: string | null) => void }) {
+  const input = useRef<HTMLInputElement>(null)
+  const finished = useRef(false)
+  useEffect(() => {
+    input.current?.focus()
+    input.current?.select()
+  }, [])
+  const finish = (name: string | null) => {
+    if (finished.current) return
+    finished.current = true
+    onDone(name)
+  }
+  return (
+    <span className="row-name">
+      <input
+        ref={input}
+        aria-label={label}
+        defaultValue={initial}
+        spellCheck={false}
+        autoComplete="off"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') finish(e.currentTarget.value)
+          if (e.key === 'Escape') finish(null)
+        }}
+        onBlur={(e) => finish(e.currentTarget.value)}
+      />
+      {ext && <span className="row-name-ext">.{ext}</span>}
+    </span>
   )
 }
 

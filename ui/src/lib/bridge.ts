@@ -11,12 +11,20 @@ export type NativeEvent =
   | { id: string; type: 'tools'; percent: number }
   | { id: string; type: 'done'; path: string; folder?: string }
   | { id: string; type: 'error'; message: string }
+  | { id: string; type: 'renamed'; path: string; name: string }
+  | { id: string; type: 'renameFailed' }
+  | { id: string; type: 'trimProgress'; percent: number }
+  | { id: string; type: 'trimFailed' }
   | { type: 'folder'; name: string }
 
 type Outgoing =
   | { type: 'download'; id: string; url: string; format: Format; quality: string }
   | { type: 'cancel'; id: string }
   | { type: 'reveal'; path: string }
+  // Cambia el nombre del archivo (sin extensión); la parte nativa responde «renamed».
+  | { type: 'rename'; id: string; path: string; name: string }
+  // Recorta [start, end] (segundos). Sin copyName sustituye el archivo; con él guarda una copia.
+  | { type: 'trim'; id: string; path: string; start: number; end: number; copyName?: string }
   | { type: 'drag' }
   | { type: 'getFolder' }
   | { type: 'chooseFolder' }
@@ -30,7 +38,9 @@ declare global {
     webkit?: { messageHandlers?: { ytdlp?: { postMessage(m: Outgoing): void } } }
     __native?: (e: NativeEvent) => void
     __paste?: (text: string) => void
-    __TAURI__?: { core: { invoke(command: string, args?: Record<string, unknown>): Promise<unknown> } }
+    __TAURI__?: {
+      core: { invoke(command: string, args?: Record<string, unknown>): Promise<unknown>; convertFileSrc(path: string, protocol?: string): string }
+    }
     __TAP__?: { accent?: string; material?: boolean }
   }
 }
@@ -46,6 +56,15 @@ if (platform === 'windows') {
   root.classList.add('windows')
   if (window.__TAP__?.material === false) root.classList.add('no-material')
   if (window.__TAP__?.accent) root.style.setProperty('--accent', window.__TAP__.accent)
+}
+
+// Dirección con la que la interfaz puede reproducir un archivo descargado (editor).
+// Mac: el esquema app:// sirve el archivo (con rangos). Windows: el protocolo asset
+// de Tauri. Navegador: una muestra en ui/public (sample.mp4, sample.mp3…; no se sube).
+export function mediaUrl(path: string): string {
+  if (platform === 'mac') return `app://local/__media__?p=${encodeURIComponent(path)}`
+  if (platform === 'windows' && tauri) return tauri.convertFileSrc(path, 'asset')
+  return `/sample.${path.split('.').pop() ?? 'mp4'}`
 }
 
 const listeners = new Set<(e: NativeEvent) => void>()
@@ -76,9 +95,24 @@ function simulate(message: Outgoing) {
     window.__native?.({ type: 'folder', name: message.type === 'getFolder' ? '@downloads' : '@desktop' })
     return
   }
-  if (message.type !== 'download') return
-  const { id, url } = message
   const emit = (e: NativeEvent) => window.__native?.(e)
+  if (message.type === 'rename') {
+    const { id, path, name } = message
+    const folder = path.slice(0, path.lastIndexOf('/') + 1)
+    window.setTimeout(() => emit({ id, type: 'renamed', name, path: `${folder}${name}.${path.split('.').pop()}` }), 150)
+    return
+  }
+  if (message.type === 'trim') {
+    const { id, path, copyName } = message
+    const queue: number[] = []
+    timers.set(id, queue)
+    for (let i = 1; i <= 10; i++) queue.push(window.setTimeout(() => emit({ id, type: 'trimProgress', percent: i * 10 }), i * 150))
+    const target = copyName ? `${path.slice(0, path.lastIndexOf('/') + 1)}${copyName}.${path.split('.').pop()}` : path
+    queue.push(window.setTimeout(() => emit({ id, type: 'done', path: target, folder: '@downloads' }), 1700))
+    return
+  }
+  if (message.type !== 'download') return
+  const { id, url, format } = message
   const queue: number[] = []
   const at = (ms: number, fn: () => void) => queue.push(window.setTimeout(fn, ms))
   timers.set(id, queue)
@@ -92,5 +126,5 @@ function simulate(message: Outgoing) {
     at(700 + i * 180, () => emit({ id, type: 'progress', percent: i * 5, eta: `00:${String(20 - i).padStart(2, '0')}`, part: 0 }))
   }
   at(4400, () => emit({ id, type: 'part' }))
-  at(5600, () => emit({ id, type: 'done', path: '/tmp/Me at the zoo.mp4', folder: '@downloads' }))
+  at(5600, () => emit({ id, type: 'done', path: `/tmp/Me at the zoo.${format}`, folder: '@downloads' }))
 }

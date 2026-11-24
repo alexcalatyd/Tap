@@ -1,7 +1,8 @@
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from 'motion/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { DropZone } from 'react-aria-components'
-import { DownloadRow, type Item } from '@/components/DownloadRow'
+import { baseName, cleanName, displayName, DownloadRow, type Item } from '@/components/DownloadRow'
+import { Editor } from '@/components/Editor'
 import { FormatBar, isVideo } from '@/components/FormatBar'
 import { QualityPicker } from '@/components/QualityPicker'
 import { LinkField, type LinkFieldHandle } from '@/components/LinkField'
@@ -84,9 +85,15 @@ function reduce(item: Item, event: NativeEvent): Item {
     case 'part':
       return { ...item, phase: 'processing' }
     case 'done':
-      return { ...item, phase: 'done', percent: 100, path: event.path, folder: event.folder }
+      return { ...item, phase: 'done', percent: 100, path: event.path, folder: event.folder, notice: undefined, trimOf: undefined }
     case 'error':
       return { ...item, phase: 'error', message: event.message }
+    case 'renamed':
+      return { ...item, path: event.path, name: undefined, notice: undefined }
+    case 'renameFailed':
+      return { ...item, name: undefined, notice: 'rename' }
+    case 'trimProgress':
+      return { ...item, phase: 'trimming', percent: Math.min(event.percent, 100) }
     default:
       return item
   }
@@ -96,6 +103,9 @@ export default function App() {
   const [format, setFormat] = useState<Format>(savedFormat)
   const [items, setItems] = useState<Item[]>([])
   const [folder, setFolder] = useState('@downloads')
+  const [editing, setEditing] = useState<string | null>(null)
+  // Nombres elegidos antes de que termine la descarga: se aplican al llegar «done».
+  const pendingNames = useRef(new Map<string, string>())
   const lang = useLang()
   const t = useStrings()
   const field = useRef<LinkFieldHandle>(null)
@@ -105,9 +115,33 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('in-browser', !isNative)
+    const clearNotice = (id: string) =>
+      window.setTimeout(() => setItems((list) => list.map((item) => (item.id === id ? { ...item, notice: undefined } : item))), 5000)
+
     const off = onNativeEvent((event) => {
-      if (event.type === 'folder') setFolder(event.name)
-      else setItems((list) => list.map((item) => (item.id === event.id ? reduce(item, event) : item)))
+      if (event.type === 'folder') return setFolder(event.name)
+      if (event.type === 'done') {
+        const name = pendingNames.current.get(event.id)
+        if (name !== undefined) {
+          pendingNames.current.delete(event.id)
+          send({ type: 'rename', id: event.id, path: event.path, name })
+        }
+      }
+      if (event.type === 'renameFailed') clearNotice(event.id)
+      if (event.type === 'trimFailed') {
+        // Copia: se quita su fila y el aviso va a la original. Sustituir: la fila vuelve a como estaba.
+        setItems((list) => {
+          const target = list.find((item) => item.id === event.id)
+          if (!target) return list
+          const original = target.trimOf ?? target.id
+          clearNotice(original)
+          return list
+            .filter((item) => !(item.id === event.id && target.trimOf))
+            .map((item) => (item.id === original ? { ...item, phase: 'done', percent: 100, notice: 'trim' } : item))
+        })
+        return
+      }
+      setItems((list) => list.map((item) => (item.id === event.id ? reduce(item, event) : item)))
     })
     send({ type: 'getFolder' })
     return off
@@ -173,8 +207,43 @@ export default function App() {
 
   const remove = (item: Item) => {
     if (item.phase !== 'done' && item.phase !== 'error') send({ type: 'cancel', id: item.id })
+    pendingNames.current.delete(item.id)
+    // Cancelar un recorte que iba a sustituir el archivo: el archivo sigue como estaba.
+    if (item.phase === 'trimming' && !item.trimOf) {
+      setItems((list) => list.map((other) => (other.id === item.id ? { ...other, phase: 'done', percent: 100 } : other)))
+      return
+    }
     setItems((list) => list.filter((other) => other.id !== item.id))
   }
+
+  const rename = (item: Item, raw: string) => {
+    const name = cleanName(raw)
+    if (!name || name === displayName(item)) return
+    setItems((list) => list.map((other) => (other.id === item.id ? { ...other, name, notice: undefined } : other)))
+    if (item.phase === 'done' && item.path) send({ type: 'rename', id: item.id, path: item.path, name })
+    else pendingNames.current.set(item.id, name)
+  }
+
+  const saveTrim = (item: Item, start: number, end: number, copy: boolean) => {
+    setEditing(null)
+    if (!item.path) return
+    const range = { start: Math.round(start * 1000) / 1000, end: Math.round(end * 1000) / 1000 }
+    if (!copy) {
+      setItems((list) => list.map((other) => (other.id === item.id ? { ...other, phase: 'trimming', percent: 0, notice: undefined } : other)))
+      send({ type: 'trim', id: item.id, path: item.path, ...range })
+      return
+    }
+    const id = crypto.randomUUID()
+    const copyName = `${baseName(item.path)} (${t.editor.copySuffix})`
+    const fresh: Item = { ...item, id, phase: 'trimming', percent: 0, title: copyName, path: undefined, name: undefined, notice: undefined, trimOf: item.id }
+    setItems((list) => {
+      const index = list.findIndex((other) => other.id === item.id)
+      return [...list.slice(0, index), fresh, ...list.slice(index)]
+    })
+    send({ type: 'trim', id, path: item.path, ...range, copyName })
+  }
+
+  const editingItem = items.find((item) => item.id === editing && item.phase === 'done' && item.path)
 
   const retry = (item: Item) => {
     setItems((list) =>
@@ -195,7 +264,7 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <DropZone
-        className="app"
+        className={editingItem ? 'app is-editing' : 'app'}
         getDropOperation={(types) => (types.has('text/uri-list') || types.has('text/plain') ? 'copy' : 'cancel')}
         onDrop={async (event) => {
           for (const item of event.items) {
@@ -239,6 +308,8 @@ export default function App() {
                       onReveal={() => item.path && send({ type: 'reveal', path: item.path })}
                       onRemove={() => remove(item)}
                       onRetry={() => retry(item)}
+                      onRename={(name) => rename(item, name)}
+                      onEdit={() => setEditing(item.id)}
                     />
                   ))}
                 </AnimatePresence>
@@ -246,6 +317,17 @@ export default function App() {
             )}
           </main>
         </LayoutGroup>
+
+        <AnimatePresence>
+          {editingItem && (
+            <Editor
+              key={editingItem.id}
+              item={editingItem}
+              onClose={() => setEditing(null)}
+              onSave={(start, end, copy) => saveTrim(editingItem, start, end, copy)}
+            />
+          )}
+        </AnimatePresence>
 
         <footer className="footer" onMouseDown={dragWindow}>
           <button type="button" className="folder" onClick={() => send({ type: 'chooseFolder' })} title={t.changeFolder}>

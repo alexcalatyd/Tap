@@ -19,6 +19,7 @@
   --shine: rgba(255, 255, 255, 0.75);
   --danger: #e5352b;
   --window: rgba(246, 246, 248, 0.5);
+  --dim: rgba(242, 242, 245, 0.68);
 
   --ease-apple: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
@@ -50,6 +51,7 @@
     --shine: rgba(255, 255, 255, 0.16);
     --danger: #ff6257;
     --window: rgba(30, 30, 32, 0.5);
+    --dim: rgba(22, 22, 24, 0.66);
   }
 }
 
@@ -632,6 +634,366 @@ button {
   to {
     rotate: 1turn;
   }
+}
+
+/* ── Cambiar el nombre (en la propia fila) ───────────────────────────────── */
+
+.row-main.is-renaming {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.row-name {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 10px;
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow:
+    inset 0 0.5px 0 var(--shine),
+    0 0 0 0.5px var(--edge),
+    0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.row-name input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 590;
+  color: var(--label);
+  caret-color: var(--accent);
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.row-name-ext {
+  flex: none;
+  font-size: 13px;
+  color: var(--label-3);
+}
+
+/* ── Editor (recortar) ──────────────────────────────────────────────────── */
+
+.app.is-editing .stage,
+.app.is-editing .footer {
+  opacity: 0;
+  filter: blur(8px);
+  pointer-events: none;
+}
+.app.is-editing .stage {
+  scale: 0.97;
+}
+
+.editor {
+  position: absolute;
+  inset: 56px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 20px 18px;
+}
+
+.editor-name {
+  flex: none;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 590;
+  color: var(--label);
+}
+
+.editor-preview {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--well);
+  box-shadow: inset 0 0 0 0.5px var(--edge);
+}
+.editor-preview video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.editor-preview[data-video='false'] video {
+  display: none;
+}
+.editor-cover {
+  width: 104px;
+  height: 104px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow:
+    0 0 0 0.5px var(--edge),
+    0 8px 24px rgba(0, 0, 0, 0.12);
+  color: var(--label-3);
+}
+.editor-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.editor-cover svg {
+  width: 34px;
+  height: 34px;
+}
+.editor-error {
+  position: absolute;
+  margin: 0;
+  font-size: 12px;
+  color: var(--label-2);
+}
+
+.editor-transport {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.editor-play {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow:
+    inset 0 0.5px 0 var(--shine),
+    0 0 0 0.5px var(--edge),
+    0 1px 3px rgba(0, 0, 0, 0.08);
+  color: var(--label);
+  transition:
+    scale 0.2s var(--ease-out),
+    opacity 0.2s var(--ease-out);
+}
+.editor-play svg {
+  width: 15px;
+  height: 15px;
+}
+.editor-play:not(:disabled):active {
+  scale: 0.92;
+}
+.editor-play:disabled {
+  opacity: 0.4;
+}
+.editor-play:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.editor-clock {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: var(--label);
+}
+.editor-clock span {
+  color: var(--label-3);
+}
+.editor-length {
+  margin-left: auto;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0 9px;
+  border-radius: 11px;
+  background: var(--well);
+  font-size: 11.5px;
+  font-weight: 590;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-2);
+  transition:
+    background-color 0.2s var(--ease-out),
+    color 0.2s var(--ease-out);
+}
+.editor-length[data-changed='true'] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+/* Línea de tiempo: las asas quedan por fuera del tramo, así que hay margen a los lados. */
+.trim {
+  flex: none;
+  padding: 0 12px;
+}
+.trim-track {
+  position: relative;
+  height: 48px;
+  touch-action: none;
+}
+.trim-strip {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--well);
+  box-shadow: inset 0 0 0 0.5px var(--edge);
+}
+.trim-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  animation: list-in 0.3s var(--ease-out);
+}
+.trim-wave {
+  width: 100%;
+  height: 100%;
+  color: var(--label-2);
+}
+.trim-wave svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  animation: list-in 0.3s var(--ease-out);
+}
+.trim-shade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--dim);
+  pointer-events: none;
+}
+.trim-shade:first-of-type {
+  border-radius: 8px 0 0 8px;
+}
+.trim-shade:nth-of-type(2) {
+  border-radius: 0 8px 8px 0;
+}
+.trim-frame {
+  position: absolute;
+  top: -2.5px;
+  bottom: -2.5px;
+  border-top: 2.5px solid var(--accent);
+  border-bottom: 2.5px solid var(--accent);
+  pointer-events: none;
+}
+.trim-track[data-ready='false'] .trim-frame {
+  opacity: 0.35;
+}
+.trim-handle {
+  position: absolute;
+  top: -2.5px;
+  bottom: -2.5px;
+  width: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+.trim-handle::after {
+  content: '';
+  width: 2px;
+  height: 14px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.92);
+}
+.trim-handle.is-start {
+  left: -12px;
+  border-radius: 7px 0 0 7px;
+}
+.trim-handle.is-end {
+  right: -12px;
+  border-radius: 0 7px 7px 0;
+}
+.trim-handle:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.trim-playhead {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: #fff;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+.trim-marks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-2);
+}
+.trim-hint {
+  color: var(--label-3);
+}
+
+.editor-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+.editor-spacer {
+  flex: 1;
+}
+.editor-button {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 15px;
+  background: var(--surface);
+  box-shadow:
+    inset 0 0.5px 0 var(--shine),
+    0 0 0 0.5px var(--edge),
+    0 1px 3px rgba(0, 0, 0, 0.06);
+  font-size: 13px;
+  font-weight: 590;
+  color: var(--label);
+  transition:
+    opacity 0.2s var(--ease-out),
+    scale 0.2s var(--ease-out),
+    background-color 0.2s var(--ease-out);
+}
+.editor-button.is-plain {
+  background: transparent;
+  box-shadow: none;
+  color: var(--label-2);
+}
+.editor-button.is-plain:hover {
+  background: var(--well);
+  color: var(--label);
+}
+.editor-button.is-primary {
+  background: var(--accent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  color: #fff;
+}
+.editor-button:disabled {
+  opacity: 0.4;
+}
+.editor-button:not(:disabled):active {
+  scale: 0.96;
+}
+.editor-button:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 /* ── Carpeta de destino ─────────────────────────────────────────────────── */
