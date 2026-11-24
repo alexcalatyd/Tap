@@ -50,6 +50,19 @@ actually make:
 
 ## Installation
 
+### With Homebrew
+
+```sh
+brew tap alexcalatyd/tap
+brew trust alexcalatyd/tap   # Homebrew asks you to trust third-party taps once
+brew install --cask alexcalatyd/tap/tap
+```
+
+That also installs yt-dlp and ffmpeg. It isn't notarized by Apple, so the first time macOS blocks it: open it from
+**System Settings → Privacy & Security → Open Anyway** (Homebrew reminds you how).
+
+### Manually
+
 On the Mac, Tap uses yt-dlp and ffmpeg from Homebrew, so install those first:
 
 ```sh
